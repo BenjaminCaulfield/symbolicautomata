@@ -81,15 +81,15 @@ public class SFT<P, F, S> extends Automaton<P, S> {
 	*/
 	public static <P, F, S> SFT<P, F, S> MkSFT(Collection<SFTMove<P, F, S>> transitions, Integer initialState,
 											   Map<Integer, Set<List<S>>> finalStatesAndTails,
-													 BooleanAlgebraSubst<P, F, S> ba) {
+													 BooleanAlgebraSubst<P, F, S> ba) throws TimeoutException {
 		SFT<P, F, S> aut = new SFT<P, F, S>();
 
 		// Initialize state set
 		aut.initialState = initialState;
 
-		for (Integer state: finalStatesAndTails.keySet()) {
+		for (Integer state : finalStatesAndTails.keySet()) {
 			Set<List<S>> tails = new HashSet<List<S>>();
-			for (List<S> tail: finalStatesAndTails.get(state)) {
+			for (List<S> tail : finalStatesAndTails.get(state)) {
 				if (tail.size() != 0) // remove the empty tail which is just an empty List<S> for brevity
 					tails.add(tail);
 			}
@@ -101,14 +101,37 @@ public class SFT<P, F, S> extends Automaton<P, S> {
 		aut.states = new HashSet<Integer>();
 		aut.states.add(initialState);
 		aut.states.addAll(finalStatesAndTails.keySet());
-		
+
 		try {
 			for (SFTMove<P, F, S> t : transitions)
 				aut.addTransition(t, ba, false);
-			return aut;
 		} catch (TimeoutException toe) {
 			return null;
 		}
+
+		aut.isDeterministic = aut.checkDeterminism(ba);
+		return aut;
+	}
+
+	/**
+	 * Check whether a SFT is deterministic
+	 */
+	private boolean checkDeterminism(BooleanAlgebraSubst<P, F, S> ba) throws TimeoutException {
+		if (!isEpsilonFree) {
+			return false;
+		} else { // check whether transitions of one state have overlapped guards
+			for (Integer state: getStates()) {
+				ArrayList<SFTInputMove<P, F, S>> trset = new ArrayList<SFTInputMove<P, F, S>>(getInputMovesFrom(state));
+				for (int i = 0; i < trset.size(); i++) {
+					for (int j = i + 1; j < trset.size(); j++) {
+						if (ba.IsSatisfiable(ba.MkAnd(trset.get(i).guard, trset.get(j).guard))) {
+							return false;
+						}
+					}
+				}
+			}
+		}
+		return true;
 	}
 
 	/**
@@ -338,15 +361,15 @@ public class SFT<P, F, S> extends Automaton<P, S> {
 	/**
 	 * return an equivalent copy without epsilon moves
 	 */
-	protected SFT<P, F, S> removeEpsilonMoves(BooleanAlgebraSubst<P, F, S> ba) {
+	protected SFT<P, F, S> removeEpsilonMoves(BooleanAlgebraSubst<P, F, S> ba) throws TimeoutException {
 		return removeEpsilonMovesFrom(this, ba);
 	}
 
 	/**
 	 * return an equivalent copy without epsilon moves
 	 */
-	protected static <P, F, S> SFT<P, F, S> removeEpsilonMovesFrom(SFT<P, F, S> sft,
-																		 BooleanAlgebraSubst<P, F, S> ba) {
+	protected static <P, F, S> SFT<P, F, S> removeEpsilonMovesFrom(SFT<P, F, S> sft, BooleanAlgebraSubst<P, F, S> ba)
+			throws TimeoutException{
 
 		if (sft.isEpsilonFree)
 			return sft;
@@ -841,7 +864,8 @@ public class SFT<P, F, S> extends Automaton<P, S> {
 	 * 
 	 * @return corresponding sft
 	 */
-	private static <P, F, S> SFT<P, F, S> SFAtoSFT(SFA<P, S> sfa, BooleanAlgebraSubst<P, F, S> ba) {
+	private static <P, F, S> SFT<P, F, S> SFAtoSFT(SFA<P, S> sfa, BooleanAlgebraSubst<P, F, S> ba)
+			throws TimeoutException {
 		Collection<SFTMove<P, F, S>> transitions = new ArrayList<SFTMove<P, F, S>>();
 		for (Integer state: sfa.getStates()) {
 			for (SFAInputMove<P, S> transition: sfa.getInputMovesFrom(state)) {
@@ -925,6 +949,12 @@ public class SFT<P, F, S> extends Automaton<P, S> {
 		return MkSFT(transitions, initialState, finalStatesAndTails, ba);
 	}
 
+	/**
+	 * Computes the output language of this transducer if possible, otherwise returns an overapproximation
+	 * @param ba
+	 * @return output SFA
+	 * @throws TimeoutException
+	 */
 	public SFA<P, S> getOutputSFA(BooleanAlgebraSubst<P, F, S> ba) throws TimeoutException {
 
 		Collection<SFAMove<P, S>> transitions = new ArrayList<SFAMove<P, S>>();
@@ -969,41 +999,54 @@ public class SFT<P, F, S> extends Automaton<P, S> {
 				}
 			}
 
+			//Epsilon transitions
 			for (SFTEpsilon<P, F, S> t1 : this.getEpsilonMovesFrom(currState)) {
-				// if t1.outputs.size() == 0, just do nothing
-				if (t1.outputs.size() == 1) {
+				if (t1.outputs.size() == 0){
 					int nextStateId = getStateId(t1.to, reached, toVisit);
-					SFAInputMove<P, S> newTrans = new SFAInputMove<P, S>(currStateId, nextStateId,
-							ba.MkAtom(t1.outputs.get(0)));
+					SFAEpsilon<P, S> newTrans = new SFAEpsilon<P, S>(currStateId, nextStateId);
 					transitions.add(newTrans);
-				} else if (t1.outputs.size() > 1) {
-					int nextStateId = getStateId(moreStateId++, reached, toVisit);
-					SFAInputMove<P, S> newTrans = new SFAInputMove<P, S>(currStateId, nextStateId,
-							ba.MkAtom(t1.outputs.get(0)));
-					transitions.add(newTrans);
-					int lastStateId = nextStateId;
-					for (int i = 1; i < t1.outputs.size() - 1; i++) {
-						nextStateId = getStateId(moreStateId++, reached, toVisit);
-						newTrans = new SFAInputMove<P, S>(lastStateId, nextStateId, ba.MkAtom(t1.outputs.get(i)));
+				}else{					
+					if (t1.outputs.size() == 1) {
+						int nextStateId = getStateId(t1.to, reached, toVisit);
+						SFAInputMove<P, S> newTrans = new SFAInputMove<P, S>(currStateId, nextStateId,
+								ba.MkAtom(t1.outputs.get(0)));
 						transitions.add(newTrans);
-						lastStateId = nextStateId;
+					} else if (t1.outputs.size() > 1) {
+						int nextStateId = getStateId(moreStateId++, reached, toVisit);
+						SFAInputMove<P, S> newTrans = new SFAInputMove<P, S>(currStateId, nextStateId,
+								ba.MkAtom(t1.outputs.get(0)));
+						transitions.add(newTrans);
+						int lastStateId = nextStateId;
+						for (int i = 1; i < t1.outputs.size() - 1; i++) {
+							nextStateId = getStateId(moreStateId++, reached, toVisit);
+							newTrans = new SFAInputMove<P, S>(lastStateId, nextStateId, ba.MkAtom(t1.outputs.get(i)));
+							transitions.add(newTrans);
+							lastStateId = nextStateId;
+						}
+						nextStateId = getStateId(t1.to, reached, toVisit);
+						newTrans = new SFAInputMove<P, S>(currStateId, nextStateId, ba.MkAtom(t1.outputs.get(t1.outputs.size() - 1)));
+						transitions.add(newTrans);
 					}
-					nextStateId = getStateId(t1.to, reached, toVisit);
-					newTrans = new SFAInputMove<P, S>(currStateId, nextStateId, ba.MkAtom(t1.outputs.get(t1.outputs.size() - 1)));
-					transitions.add(newTrans);
 				}
 			}
 
+			//Input moves
 			for (SFTInputMove<P, F, S> t1 : this.getInputMovesFrom(currState)) {
-				// if t1.outputFunctions.size() == 0, just do nothing
-				if (t1.outputFunctions.size() == 1) {
+				if (t1.outputFunctions.size() == 0){
 					int nextStateId = getStateId(t1.to, reached, toVisit);
-					SFAInputMove<P, S> newTrans = new SFAInputMove<P, S>(currStateId, nextStateId,
-							ba.getRestrictedOutput(t1.guard, t1.outputFunctions.get(0)));
+					SFAEpsilon<P, S> newTrans = new SFAEpsilon<P, S>(currStateId, nextStateId);
 					transitions.add(newTrans);
-				} else if (t1.outputFunctions.size() > 1) {
-					throw new UnsupportedOperationException("Not supported yet.");
-				}
+				} else {	
+					if (t1.outputFunctions.size() == 1) {
+						int nextStateId = getStateId(t1.to, reached, toVisit);
+						SFAInputMove<P, S> newTrans = new SFAInputMove<P, S>(currStateId, nextStateId,
+								ba.getRestrictedOutput(t1.guard, t1.outputFunctions.get(0)));
+						transitions.add(newTrans);
+					} else if (t1.outputFunctions.size() > 1) {
+						//Might lose precision
+						throw new UnsupportedOperationException("Not supported yet.");
+					}
+				}				
 			}
 
 		}
